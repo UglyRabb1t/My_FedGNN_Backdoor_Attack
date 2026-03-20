@@ -71,7 +71,7 @@ def transform_dataset(trainset, testset, avg_nodes, args):
                     data[0].add_edges(torch.tensor([trigger_list[i][j], trigger_list[i][k]]), torch.tensor([trigger_list[i][k], trigger_list[i][j]]))
     ## rebuild data with target label
     graphs = [data[0] for data in train_trigger_graphs]
-    labels = [torch.tensor([args.target_label]) for i in range(len(train_trigger_graphs))]
+    labels = [torch.tensor(args.target_label) for i in range(len(train_trigger_graphs))]
     train_trigger_graphs = DGLFormDataset(graphs, labels)
 
     test_clean_graphs = [copy.deepcopy(graph) for graph in testset]
@@ -98,7 +98,7 @@ def transform_dataset(trainset, testset, avg_nodes, args):
                     and G_trigger.has_edge(i, j):
                     graph[0].add_edges(torch.tensor([trigger_idx[i], trigger_idx[j]]), torch.tensor([trigger_idx[j], trigger_idx[i]]))
     graphs = [data[0] for data in test_changed_graphs]
-    labels = [torch.tensor([args.target_label]) for i in range(len(test_changed_graphs))]
+    labels = [torch.tensor(args.target_label) for i in range(len(test_changed_graphs))]
     test_trigger_graphs = DGLFormDataset(graphs, labels)
     
     return train_trigger_graphs, test_trigger_graphs, G_trigger, final_idx
@@ -143,7 +143,7 @@ def transform_dataset_same_local_trigger(trainset, testset, avg_nodes, args, G_t
                     data[0].add_edges(torch.tensor([trigger_list[i][j], trigger_list[i][k]]), torch.tensor([trigger_list[i][k], trigger_list[i][j]]))
     ## rebuild data with target label
     graphs = [data[0] for data in train_trigger_graphs]
-    labels = [torch.tensor([args.target_label]) for i in range(len(train_trigger_graphs))]
+    labels = [torch.tensor(args.target_label) for i in range(len(train_trigger_graphs))]
     train_trigger_graphs = DGLFormDataset(graphs, labels)
 
     test_clean_graphs = [copy.deepcopy(graph) for graph in testset]
@@ -170,7 +170,7 @@ def transform_dataset_same_local_trigger(trainset, testset, avg_nodes, args, G_t
                     and G_trigger.has_edge(i, j):
                     graph[0].add_edges(torch.tensor([trigger_idx[i], trigger_idx[j]]), torch.tensor([trigger_idx[j], trigger_idx[i]]))
     graphs = [data[0] for data in test_changed_graphs]
-    labels = [torch.tensor([args.target_label]) for i in range(len(test_changed_graphs))]
+    labels = [torch.tensor(args.target_label) for i in range(len(test_changed_graphs))]
     test_trigger_graphs = DGLFormDataset(graphs, labels)
 
     return train_trigger_graphs, test_trigger_graphs, final_idx
@@ -205,7 +205,7 @@ def inject_global_trigger_test(testset, avg_nodes, args, triggers):
                         and trigger.has_edge(i, j):
                         graph[0].add_edges(torch.tensor([trigger_idx[i], trigger_idx[j]]), torch.tensor([trigger_idx[j], trigger_idx[i]]))
     graphs = [data[0] for data in test_changed_graphs]
-    labels = [torch.tensor([args.target_label]) for i in range(len(test_changed_graphs))]
+    labels = [torch.tensor(args.target_label) for i in range(len(test_changed_graphs))]
     test_trigger_graphs = DGLFormDataset(graphs, labels)
     return test_trigger_graphs
 
@@ -250,7 +250,7 @@ def inject_global_trigger_train(trainset, avg_nodes, args, triggers):
                         and trigger.has_edge(i, j):
                         graph[0].add_edges(torch.tensor([trigger_idx[i], trigger_idx[j]]), torch.tensor([trigger_idx[j], trigger_idx[i]]))
     graphs = [data[0] for data in train_trigger_graphs]
-    labels = [torch.tensor([args.target_label]) for i in range(len(train_trigger_graphs))]
+    labels = [torch.tensor(args.target_label) for i in range(len(train_trigger_graphs))]
     train_trigger_graphs = DGLFormDataset(graphs, labels)
     return train_trigger_graphs, final_idx
 
