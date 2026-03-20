@@ -25,8 +25,12 @@ def args_parser():
     parser.add_argument('--num_mali', type=int, default=3, help="number of malicious clients")
     parser.add_argument('--filename', type = str, default = "", help='path of output file(save results)')
     parser.add_argument('--epoch_backdoor', type=int, default=0, help='from which epoch the malicious clients start backdoor attack')
+    parser.add_argument('--epoch_stop_backdoor', type=int, default=50,
+                        help='epoch at which to stop backdoor injection (persistence phase begins')
     parser.add_argument('--seed', type=int, default=0, help='0-9')
     parser.add_argument('--defense', type=str, default='None', help='whethere perform a defense, e.g., foolsgold')
+    parser.add_argument('--gradmask_ratio', type=float, default=1.0,
+                        help="ratio of parameters to retain for GradMask (1.0 = no masking, <1.0 = use GradMask)")
     parser.add_argument('--robustLR_threshold', type=int, default=0, 
                         help="break ties when votes sum to 0")
     parser.add_argument('--server_lr', type=float, default=1,

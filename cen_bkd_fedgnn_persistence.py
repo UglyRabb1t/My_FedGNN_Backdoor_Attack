@@ -1,3 +1,13 @@
+"""
+Backdoor Persistence Experiment for Federated Learning
+=================================================
+This script implements the backdoor persistence experiment:
+1. Attack phase: Inject backdoor triggers from epoch_backdoor to epoch_stop_backdoor
+2. Persistence phase: Stop trigger injection, continue benign training
+3. Observe how the backdoor accuracy degrades over time
+"""
+import argparse
+
 from Common.Node.workerbasev2 import WorkerBaseV2
 from gradmask import compute_grad_mask, apply_grad_mask
 import torch
@@ -11,13 +21,14 @@ from Common.Utils.gnn_util import inject_global_trigger_test, inject_global_trig
 import time
 from Common.Utils.evaluate import gnn_evaluate_accuracy_v2
 from GNN_common.train.metrics import accuracy_TU as accuracy
-import numpy as np 
+import numpy as np
 import torch.nn.functional as F
 from GNN_common.data.TUs import TUsDataset
 from GNN_common.nets.TUs_graph_classification.load_net import gnn_model  # import GNNs
 from torch.utils.data import DataLoader
 from defense import foolsgold
 import copy
+
 
 def server_robust_agg(w):
     w_avg = copy.deepcopy(w[0])
@@ -26,7 +37,8 @@ def server_robust_agg(w):
             w_avg[key] += w[i][key]
         w_avg[key] = torch.div(w_avg[key], len(w))
     return w_avg
-    
+
+
 class ClearDenseClient(WorkerBaseV2):
     def __init__(self, client_id, model, loss_func, train_iter, attack_iter, test_iter, config, optimizer, device, grad_stub, args, scheduler, is_malicious=False):
         super(ClearDenseClient, self).__init__(model=model, loss_func=loss_func, train_iter=train_iter, attack_iter=attack_iter,
@@ -43,8 +55,8 @@ class ClearDenseClient(WorkerBaseV2):
 
 class MaliciousClient(ClearDenseClient):
     """
-    Malicious client that applies GradMask during backdoor training.
-    This helps preserve main task accuracy while achieving attack success.
+    Malicious client for backdoor persistence experiment.
+    Can switch between attack mode and benign mode.
     """
     def __init__(self, client_id, model, loss_func, train_iter, attack_iter, test_iter, config, optimizer, device, grad_stub, args, scheduler):
         super(MaliciousClient, self).__init__(
@@ -58,9 +70,21 @@ class MaliciousClient(ClearDenseClient):
         """Set the gradient mask computed from global model"""
         self.mask_grad_list = mask_grad_list
 
+    def set_attack_mode(self, enable_attack, train_loader=None, attack_loader=None):
+        """Switch between attack mode and benign mode"""
+        if enable_attack and train_loader is not None:
+            self.train_iter = train_loader
+        else:
+            # Use benign data for training
+            pass  # Will be set externally
+
+        if enable_attack and attack_loader is not None:
+            self.attack_iter = attack_loader
+        else:
+            self.attack_iter = None
+
     def gnn_train_v2(self):
-        """Local training with GradMask for backdoor attacks"""
-        # Initial model params for update computation
+        """Local training with optional GradMask for backdoor attacks"""
         from torch.nn.utils import parameters_to_vector
         initial_model_params = parameters_to_vector(self.model.parameters()).detach()
 
@@ -109,6 +133,7 @@ class MaliciousClient(ClearDenseClient):
 
         return train_l_sum / batch_count, train_acc_sum / n, test_l, test_acc
 
+
 class DotDict(dict):
     def __init__(self, **kwds):
         self.update(kwds)
@@ -117,7 +142,7 @@ class DotDict(dict):
 
 if __name__ == '__main__':
     args = args_parser()
-    torch.manual_seed(args.seed)
+
     with open(args.config) as f:
         config = json.load(f)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -138,17 +163,47 @@ if __name__ == '__main__':
     ## set a global model
     global_model = gnn_model(MODEL_NAME, net_params)
     global_model = global_model.to(device)
-    #print("Target Model:\n{}".format(model))
+
     client = []
     loss_func = nn.CrossEntropyLoss()
     # Load data
     partition, avg_nodes = split_dataset(args, dataset)
     drop_last = True if MODEL_NAME == 'DiffPool' else False
     filename = "./Data/global_trigger/%d/%s_%s_%d_%d_%d_%.2f_%.2f_%.2f"\
-              %(args.seed, MODEL_NAME, config['dataset'], args.num_workers, args.num_mali, args.epoch_backdoor, args.frac_of_avg, args.poisoning_intensity, args.density) + '.pkl'
+              %(args.seed, MODEL_NAME, config['dataset'], args.num_workers, args.num_mali, args.epoch_backdoor,
+                 args.frac_of_avg, args.poisoning_intensity, args.density) + '.pkl'
     global_trigger = load_pkl(filename)
     print("Triggers loaded!")
     args.num_mali = len(global_trigger)
+
+    # Create loaders for attacker client (client[0])
+    train_trigger_graphs, final_idx = inject_global_trigger_train(partition[0], avg_nodes, args, global_trigger)
+    test_trigger_graphs = inject_global_trigger_test(partition[-1], avg_nodes, args, global_trigger)
+    tmp_graphs = [partition[0][idx] for idx in range(len(partition[0])) if idx not in final_idx]
+
+    # Backdoor data loader (for attack phase)
+    train_dataset = train_trigger_graphs + tmp_graphs
+    backdoor_train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                                   drop_last=drop_last,
+                                   collate_fn=dataset.collate)
+    # Benign data loader (for persistence phase and gradient mask computation)
+    benign_train_loader = DataLoader(tmp_graphs, batch_size=args.batch_size, shuffle=True,
+                                   drop_last=drop_last,
+                                   collate_fn=dataset.collate)
+    backdoor_attack_loader = DataLoader(test_trigger_graphs, batch_size=args.batch_size, shuffle=True,
+                                   drop_last=drop_last,
+                                   collate_fn=dataset.collate)
+
+    # Create local trigger loaders
+    test_local_trigger_load = []
+    for i in range(len(global_trigger)):
+        test_local_trigger = inject_global_trigger_test(partition[-1], avg_nodes, args, [global_trigger[i]])
+        tmp_load = DataLoader(test_local_trigger, batch_size=args.batch_size, shuffle=True,
+                           drop_last=drop_last,
+                           collate_fn=dataset.collate)
+        test_local_trigger_load.append(tmp_load)
+
+    # Initialize clients
     for i in range(args.num_workers):
         local_model = copy.deepcopy(global_model)
         local_model = local_model.to(device)
@@ -164,50 +219,34 @@ if __name__ == '__main__':
         test_loader = DataLoader(partition[-1], batch_size=args.batch_size, shuffle=True,
                                     drop_last=drop_last,
                                     collate_fn=dataset.collate)
-        
-        # Use MaliciousClient for client[0] (centralized attacker), ClearDenseClient for others
-        if i == 0:
-            client.append(MaliciousClient(client_id=i, model=local_model, loss_func=loss_func, train_iter=train_loader, attack_iter=attack_loader, test_iter=test_loader, config=config, optimizer=optimizer, device=device, grad_stub=None, args=args, scheduler=scheduler))
-        else:
-            client.append(ClearDenseClient(client_id=i, model=local_model, loss_func=loss_func, train_iter=train_loader, attack_iter=attack_loader, test_iter=test_loader, config=config, optimizer=optimizer, device=device, grad_stub=None, args=args, scheduler=scheduler))
-    # check model memory address
-    for i in range(args.num_workers):
-        add_m = id(client[i].model)
-        add_o = id(client[i].optimizer)
-        add_s = id(client[i].scheduler)
-        print('model {} address: {}'.format(i, add_m))
-        print('optimizer {} address: {}'.format(i, add_o))
-        print('scheduler {} address: {}'.format(i, add_s))
-    # prepare backdoor training dataset and testing dataset
-    train_trigger_graphs, final_idx = inject_global_trigger_train(partition[0], avg_nodes, args, global_trigger)
-    test_trigger_graphs = inject_global_trigger_test(partition[-1], avg_nodes, args, global_trigger)
-    tmp_graphs = [partition[0][idx] for idx in range(len(partition[0])) if idx not in final_idx]
 
-    train_dataset = train_trigger_graphs + tmp_graphs
-    backdoor_train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                            drop_last=drop_last,
-                            collate_fn=dataset.collate)
-    # Create benign data loader for computing gradient mask (without triggers)
-    benign_train_loader = DataLoader(tmp_graphs, batch_size=args.batch_size, shuffle=True,
-                            drop_last=drop_last,
-                            collate_fn=dataset.collate)
-    backdoor_attack_loader = DataLoader(test_trigger_graphs, batch_size=args.batch_size, shuffle=True,
-                            drop_last=drop_last,
-                            collate_fn=dataset.collate)
-    test_local_trigger_load = []
-    for i in range(len(global_trigger)):
-        test_local_trigger = inject_global_trigger_test(partition[-1], avg_nodes, args, [global_trigger[i]])
-        tmp_load = DataLoader(test_local_trigger, batch_size=args.batch_size, shuffle=True,
-                            drop_last=drop_last,
-                            collate_fn=dataset.collate)
-        test_local_trigger_load.append(tmp_load)
-    acc_record = [0]
-    counts = 0
+        # Use MaliciousClient for client[0], ClearDenseClient for others
+        if i == 0:
+            client.append(MaliciousClient(client_id=i, model=local_model, loss_func=loss_func, train_iter=train_loader,
+                                      attack_iter=attack_loader, test_iter=test_loader, config=config, optimizer=optimizer,
+                                      device=device, grad_stub=None, args=args, scheduler=scheduler))
+        else:
+            client.append(ClearDenseClient(client_id=i, model=local_model, loss_func=loss_func, train_iter=train_loader,
+                                      attack_iter=attack_loader, test_iter=test_loader, config=config, optimizer=optimizer,
+                                      device=device, grad_stub=None, args=args, scheduler=scheduler))
+
+    print(f"\n{'='*80}")
+    print(f"BACKDOOR PERSISTENCE EXPERIMENT")
+    print(f"{'='*80}")
+    print(f"Attack Phase:      Epoch {args.epoch_backdoor} - {args.epoch_stop_backdoor-1}")
+    print(f"Persistence Phase:  Epoch {args.epoch_stop_backdoor} - {args.epochs-1}")
+    print(f"{'='*80}\n")
+
     weight_history = []
+
     for epoch in range(args.epochs):
-        print('epoch:',epoch)
-        if epoch >= args.epoch_backdoor:
-            # inject global trigger into the centrilized attacker - client[0]
+        print(f'\nepoch: {epoch}')
+
+        # Determine if we are in attack phase or persistence phase
+        in_attack_phase = args.epoch_backdoor <= epoch < args.epoch_stop_backdoor
+
+        if in_attack_phase:
+            print(f"[ATTACK PHASE] Injecting backdoor triggers into client[0]")
             client[0].train_iter = backdoor_train_loader
             client[0].attack_iter = backdoor_attack_loader
             # Compute gradient mask using global model on benign data
@@ -223,20 +262,30 @@ if __name__ == '__main__':
                 )
                 client[0].set_grad_mask(mask_grad_list)
                 print(f"Gradient mask computed, retaining {args.gradmask_ratio * 100}% of smallest gradient parameters")
+        else:
+            if epoch >= args.epoch_stop_backdoor:
+                print(f"[PERSISTENCE PHASE] Stopping backdoor injection, using benign data only")
+                client[0].train_iter = benign_train_loader
+                client[0].attack_iter = None
+
         train_l_sum, train_acc_sum, n, batch_count, start = 0.0, 0.0, 0, 0, time.time()
+
         for i in range(args.num_workers):
             att_list = []
             train_loss, train_acc, test_loss, test_acc = client[i].gnn_train_v2()
             client[i].scheduler.step()
+
+            # Always evaluate attack accuracy on all clients
             global_att = gnn_evaluate_accuracy_v2(backdoor_attack_loader, client[i].model)
             print('Client %d, loss %.4f, train acc %.3f, test loss %.4f, test acc %.3f'
                     % (i, train_loss, train_acc, test_loss, test_acc))
             print('Client %d with global trigger: %.3f'%(i, global_att))
+
             for j in range(len(global_trigger)):
                 tmp_acc = gnn_evaluate_accuracy_v2(test_local_trigger_load[j], client[i].model)
                 print('Client %d with local trigger %d: %.3f'%(i, j, tmp_acc))
                 att_list.append(tmp_acc)
-            
+
             if not args.filename == "":
                 save_path = os.path.join(args.filename, str(args.seed), config['model'] + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'\
                           %(args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density) + '_%d.txt'%i)
@@ -246,18 +295,20 @@ if __name__ == '__main__':
                     os.makedirs(path)
                 with open(save_path, 'a') as f:
                     f.write('%.3f %.3f %.3f %.3f %.3f '%(train_loss, train_acc, test_loss, test_acc, global_att))
-                    for i in range(len(global_trigger)):
-                        f.write('%.3f'%att_list[i])
+                    for j in range(len(global_trigger)):
+                        f.write('%.3f'%att_list[j])
                         f.write(' ')
                     f.write('\n')
+
         weights = []
         for i in range(args.num_workers):
             weights.append(client[i].get_weights())
             weight_history.append(client[i].get_weights_list())
+
         # Aggregation in the server to get the global model
         if args.defense == 'foolsgold':
             result, weight_history, alpha = foolsgold(args, weight_history, weights, global_model, client[0])
-            save_path = os.path.join("./Results/alpha/DBA", str(args.seed), MODEL_NAME + '_' + args.dataset + \
+            save_path = os.path.join("./Results/alpha/DBA_Persistence", str(args.seed), MODEL_NAME + '_' + args.dataset + \
                         '_%d_%d_%.2f_%.2f_%.2f'%(args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density) + '_alpha.txt')
             path = os.path.split(save_path)[0]
             isExist = os.path.exists(path)
@@ -274,12 +325,14 @@ if __name__ == '__main__':
         for i in range(args.num_workers):
             client[i].set_weights(weights=result)
             client[i].upgrade()
+
         # update global model's weights
         global_model.load_state_dict(result)
-        
+
         # evaluate the global model: test_acc
         test_acc = gnn_evaluate_accuracy_v2(client[0].test_iter, global_model)
         print("Global Test acc: %.3f"%test_acc)
+
         if not args.filename == "":
             save_path = os.path.join(args.filename, str(args.seed), MODEL_NAME + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'\
                        %(args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density) + '_global_test.txt')
@@ -291,27 +344,27 @@ if __name__ == '__main__':
             with open(save_path, 'a') as f:
                 f.write("%.3f" % (test_acc))
                 f.write("\n")
-        if epoch >= args.epoch_backdoor:
-            local_att_acc = []
-            global_att_acc = gnn_evaluate_accuracy_v2(backdoor_attack_loader, global_model)
-            print('Global model with global trigger: %.3f'%global_att_acc)
-            for i in range(len(global_trigger)):
-                tmp_acc = gnn_evaluate_accuracy_v2(test_local_trigger_load[i], global_model)
-                print('Global model with local trigger %d: %.3f'%(i, tmp_acc))
-                local_att_acc.append(tmp_acc)
-            if not args.filename == "":
-                save_path = os.path.join(args.filename, str(args.seed), MODEL_NAME + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'%(args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density) + '_global_attack.txt')
-                path = os.path.split(save_path)[0]
-                isExist = os.path.exists(path)
-                if not isExist:
-                    os.makedirs(path)
-                with open(save_path, 'a') as f:
-                    f.write("%.3f" % (global_att_acc))
-                    f.write(' ')
-                    for i in range(len(global_trigger)):
-                        f.write("%.3f" % (local_att_acc[i]))
-                        f.write(' ')
-                    f.write('\n')
-        
-                
 
+        # Always track attack accuracy
+        local_att_acc = []
+        global_att_acc = gnn_evaluate_accuracy_v2(backdoor_attack_loader, global_model)
+        print('Global model with global trigger: %.3f'%global_att_acc)
+
+        for i in range(len(global_trigger)):
+            tmp_acc = gnn_evaluate_accuracy_v2(test_local_trigger_load[i], global_model)
+            print('Global model with local trigger %d: %.3f'%(i, tmp_acc))
+            local_att_acc.append(tmp_acc)
+
+        if not args.filename == "":
+            save_path = os.path.join(args.filename, str(args.seed), MODEL_NAME + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'%(args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density) + '_global_attack.txt')
+            path = os.path.split(save_path)[0]
+            isExist = os.path.exists(path)
+            if not isExist:
+                os.makedirs(path)
+            with open(save_path, 'a') as f:
+                f.write("%.3f" % (global_att_acc))
+                f.write(' ')
+                for i in range(len(global_trigger)):
+                    f.write("%.3f" % (local_att_acc[i]))
+                    f.write(' ')
+                f.write('\n')
