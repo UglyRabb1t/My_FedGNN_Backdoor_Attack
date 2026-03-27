@@ -15,6 +15,161 @@ from GNN_common.nets.TUs_graph_classification.load_net import gnn_model  # impor
 from torch.utils.data import DataLoader
 import copy
 
+# 梯度分析相关函数
+def split_params_by_layer(model):
+    """
+    将模型参数按层类型分为三个子集：
+    1. 节点特征层：embedding + GAT层
+    2. 边权重层：标准GATConv中边权重是动态计算的，无专门参数，此组为空
+    3. 全局池化层：MLP读出层
+    """
+    node_params = []
+    edge_params = []
+    pool_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        if 'embedding_h' in name:
+            # 节点特征嵌入层
+            node_params.append((name, param))
+        elif 'MLP_layer' in name:
+            # 全局池化/读出层
+            pool_params.append((name, param))
+        elif 'layers' in name and 'gatconv' in name:
+            # GAT消息传递层（节点特征层的一部分）
+            node_params.append((name, param))
+        elif 'layers' in name and 'batchnorm' in name:
+            # 批归一化层（节点特征层的一部分）
+            node_params.append((name, param))
+        # 标准GATConv中边权重是动态计算的，没有专门的边权重参数
+
+    return node_params, edge_params, pool_params
+
+
+def compute_topk_contribution(grad_list, k_ratios=[0.01, 0.05, 0.10, 0.20, 0.50]):
+    """
+    计算前k%梯度的平方和占总平方和的比例
+
+    Args:
+        grad_list: 参数梯度列表 [(name, grad_tensor), ...]
+        k_ratios: k的比例列表，如[0.01, 0.05, 0.10, 0.20, 0.50]
+
+    Returns:
+        dict: {k_ratio: contribution_ratio, ...}
+    """
+    # 将所有梯度展平
+    all_grads = []
+    for _, grad in grad_list:
+        if grad is not None:
+            all_grads.append(grad.abs().view(-1).cpu().detach().numpy())
+
+    if not all_grads:
+        return {k: 0.0 for k in k_ratios}
+
+    all_grads = np.concatenate(all_grads)
+    total_sq_sum = np.sum(all_grads ** 2)
+
+    # 避免除以0
+    if total_sq_sum < 1e-10:
+        return {k: 0.0 for k in k_ratios}
+
+    # 按绝对值降序排序
+    sorted_grads = np.sort(all_grads)[::-1]
+
+    results = {}
+    for k in k_ratios:
+        k_count = int(len(sorted_grads) * k)
+        if k_count == 0:
+            results[k] = 0.0
+        else:
+            topk_sq_sum = np.sum(sorted_grads[:k_count] ** 2)
+            results[k] = topk_sq_sum / total_sq_sum
+
+    return results
+
+
+def analyze_gradients(client, epoch, output_file='gradient_analysis.txt'):
+    """
+    分析客户端的梯度分布
+
+    Args:
+        client: 客户端对象
+        epoch: 当前轮次
+        output_file: 输出文件路径
+    """
+    model = client.model
+    device = client.device
+
+    # 重新计算梯度以确保梯度存在（避免被optimizer.zero_grad()清零）
+    model.train()
+    model.zero_grad()
+
+    # 使用训练数据的一个小批次来计算梯度
+    try:
+        batch_graphs, batch_labels = next(iter(client.train_iter))
+    except StopIteration:
+        # 如果迭代器已耗尽，重新创建
+        batch_graphs, batch_labels = next(iter(client.train_iter))
+
+    batch_graphs = batch_graphs.to(device)
+    batch_x = batch_graphs.ndata['feat'].to(device)
+    batch_e = batch_graphs.edata['feat'].to(device)
+    batch_labels = batch_labels.to(torch.long).to(device)
+
+    batch_scores = model.forward(batch_graphs, batch_x, batch_e)
+    loss = model.loss(batch_scores, batch_labels)
+    loss.backward()
+
+    # 按层分组参数
+    node_params, edge_params, pool_params = split_params_by_layer(model)
+
+    # 收集各层的梯度
+    node_grad_list = [(name, param.grad) for name, param in node_params if param.grad is not None]
+    edge_grad_list = [(name, param.grad) for name, param in edge_params if param.grad is not None]
+    pool_grad_list = [(name, param.grad) for name, param in pool_params if param.grad is not None]
+    all_grad_list = node_grad_list + edge_grad_list + pool_grad_list
+
+    # 计算各层的贡献度
+    node_results = compute_topk_contribution(node_grad_list)
+    edge_results = compute_topk_contribution(edge_grad_list)
+    pool_results = compute_topk_contribution(pool_grad_list)
+    all_results = compute_topk_contribution(all_grad_list)
+
+    # 输出到文件
+    with open(output_file, 'a', encoding='utf-8') as f:
+        f.write(f"Epoch {epoch}\n")
+        f.write("=" * 80 + "\n")
+
+        # 节点特征层
+        f.write(f"[节点特征层] 参数数量: {len(node_params)}\n")
+        for k in [0.01, 0.05, 0.10, 0.20, 0.50]:
+            f.write(f"  前{k*100:.0f}%梯度贡献度: {node_results[k]:.4f}\n")
+
+        # 边权重层（标准GATConv中无此层参数）
+        f.write(f"[边权重层] 参数数量: {len(edge_params)}\n")
+        f.write(f"  (标准GATConv中边权重是动态计算的，无专门参数)\n")
+
+        # 全局池化层
+        f.write(f"[全局池化层] 参数数量: {len(pool_params)}\n")
+        for k in [0.01, 0.05, 0.10, 0.20, 0.50]:
+            f.write(f"  前{k*100:.0f}%梯度贡献度: {pool_results[k]:.4f}\n")
+
+        # 全部参数
+        f.write(f"[全部参数] 参数数量: {len(node_params) + len(edge_params) + len(pool_params)}\n")
+        for k in [0.01, 0.05, 0.10, 0.20, 0.50]:
+            f.write(f"  前{k*100:.0f}%梯度贡献度: {all_results[k]:.4f}\n")
+
+        f.write("\n")
+
+    return {
+        'node': node_results,
+        'edge': edge_results,
+        'pool': pool_results,
+        'all': all_results
+    }
+
 def server_robust_agg(w):
     w_avg = copy.deepcopy(w[0])
     for key in w_avg.keys():
@@ -120,6 +275,16 @@ if __name__ == '__main__':
                     f.write('\n')
 
         weights = []
+        # 每隔10轮，对client[0]的梯度进行分布分析
+        if epoch % 10 == 0:
+            grad_analysis_file = os.path.join(args.filename, 'gradient_analysis.txt') if args.filename else 'gradient_analysis.txt'
+            # 确保输出目录存在
+            grad_dir = os.path.dirname(grad_analysis_file)
+            if grad_dir and not os.path.exists(grad_dir):
+                os.makedirs(grad_dir, exist_ok=True)
+            analyze_gradients(client[0], epoch, grad_analysis_file)
+            print(f'[梯度分析] Epoch {epoch} 的梯度分布已保存至 {grad_analysis_file}')
+
         for i in range(args.num_workers):
             weights.append(client[i].get_weights())
         # Aggregation in the server to get the global model
