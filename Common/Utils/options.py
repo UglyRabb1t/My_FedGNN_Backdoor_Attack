@@ -31,6 +31,8 @@ def args_parser():
     parser.add_argument('--defense', type=str, default='None', help='whethere perform a defense, e.g., foolsgold')
     parser.add_argument('--gradmask_ratio', type=float, default=1.0,
                         help="ratio of parameters to retain for GradMask (1.0 = no masking, <1.0 = use GradMask)")
+    parser.add_argument('--attack_interval', type=int, default=1,
+                        help="interval (in epochs) between backdoor attacks during attack phase (1 = every epoch, 5 = every 5 epochs)")
     parser.add_argument('--robustLR_threshold', type=int, default=0, 
                         help="break ties when votes sum to 0")
     parser.add_argument('--server_lr', type=float, default=1,
