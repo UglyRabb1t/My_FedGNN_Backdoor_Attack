@@ -137,6 +137,55 @@ def analyze_gradients(client, epoch, output_file='gradient_analysis.txt'):
     pool_results = compute_topk_contribution(pool_grad_list)
     all_results = compute_topk_contribution(all_grad_list)
 
+    # ========== 新增：跨层分析 ==========
+    # 将所有梯度展平并记录来源层
+    grad_array = []
+    layer_source = []  # 记录每个梯度元素来自哪一层
+
+    for name, grad in node_grad_list:
+        grad_flat = grad.abs().view(-1).cpu().detach().numpy()
+        grad_array.append(grad_flat)
+        layer_source.extend(['node'] * len(grad_flat))
+
+    for name, grad in pool_grad_list:
+        grad_flat = grad.abs().view(-1).cpu().detach().numpy()
+        grad_array.append(grad_flat)
+        layer_source.extend(['pool'] * len(grad_flat))
+
+    grad_array = np.concatenate(grad_array)
+    layer_source = np.array(layer_source)
+
+    # 计算全局Top-k梯度中各层的占比
+    total_elements = len(grad_array)
+    layer_contribution_in_topk = {}
+
+    for k in [0.01, 0.05, 0.10, 0.20, 0.50]:
+        k_count = int(total_elements * k)
+        if k_count == 0:
+            continue
+
+        # 找到Top-k梯度的索引
+        topk_indices = np.argpartition(grad_array, -k_count)[-k_count:]
+
+        # 统计各层在Top-k中的数量
+        node_in_topk = np.sum(layer_source[topk_indices] == 'node')
+        pool_in_topk = np.sum(layer_source[topk_indices] == 'pool')
+
+        layer_contribution_in_topk[k] = {
+            'node_ratio': node_in_topk / k_count if k_count > 0 else 0,
+            'pool_ratio': pool_in_topk / k_count if k_count > 0 else 0
+        }
+
+    # 计算各层对全局L2范数的贡献
+    total_l2 = np.sum(grad_array ** 2)
+    # node_l2 = np.sum([g.abs().cpu().detach().numpy() ** 2 for _, g in node_grad_list])
+    # pool_l2 = np.sum([g.abs().cpu().detach().numpy() ** 2 for _, g in pool_grad_list])
+    node_l2 = np.sum([g.pow(2).sum().item() for _, g in node_grad_list])
+    pool_l2 = np.sum([g.pow(2).sum().item() for _, g in pool_grad_list])
+
+    node_l2_ratio = node_l2 / total_l2 if total_l2 > 0 else 0
+    pool_l2_ratio = pool_l2 / total_l2 if total_l2 > 0 else 0
+
     # 输出到文件
     with open(output_file, 'a', encoding='utf-8') as f:
         f.write(f"Epoch {epoch}\n")
@@ -161,13 +210,32 @@ def analyze_gradients(client, epoch, output_file='gradient_analysis.txt'):
         for k in [0.01, 0.05, 0.10, 0.20, 0.50]:
             f.write(f"  前{k*100:.0f}%梯度贡献度: {all_results[k]:.4f}\n")
 
-        f.write("\n")
+        # ========== 新增：跨层分析输出 ==========
+        f.write("\n" + "-" * 80 + "\n")
+        f.write("[跨层分析]\n")
+
+        f.write("各层对全局L2范数的贡献:\n")
+        f.write(f"  节点特征层: {node_l2_ratio:.2%}\n")
+        f.write(f"  全局池化层: {pool_l2_ratio:.2%}\n")
+
+        f.write("\n全局Top-k梯度中各层的占比:\n")
+        f.write(f"{'Top-k':<10} {'节点特征层':<15} {'全局池化层':<15}\n")
+        f.write("-" * 50)
+        for k in [0.01, 0.05, 0.10, 0.20, 0.50]:
+            node_ratio = layer_contribution_in_topk[k]['node_ratio']
+            pool_ratio = layer_contribution_in_topk[k]['pool_ratio']
+            f.write(f"\n前{k*100:6.0f}%  {node_ratio:>6.2%}         {pool_ratio:>6.2%}")
+
+        f.write("\n\n")
 
     return {
         'node': node_results,
         'edge': edge_results,
         'pool': pool_results,
-        'all': all_results
+        'all': all_results,
+        'node_l2_ratio': node_l2_ratio,
+        'pool_l2_ratio': pool_l2_ratio,
+        'layer_contribution_in_topk': layer_contribution_in_topk
     }
 
 def server_robust_agg(w):
