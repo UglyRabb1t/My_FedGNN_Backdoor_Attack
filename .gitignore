@@ -1,2 +1,5 @@
 # ignore saved global trigger
 Data/*
+Results/*
+GAT_N_analysis_results.txt
+
