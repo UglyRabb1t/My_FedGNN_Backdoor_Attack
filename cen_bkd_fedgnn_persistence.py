@@ -245,8 +245,11 @@ if __name__ == '__main__':
         # Determine if we are in attack phase or persistence phase
         in_attack_phase = args.epoch_backdoor <= epoch < args.epoch_stop_backdoor
 
-        if in_attack_phase:
-            print(f"[ATTACK PHASE] Injecting backdoor triggers into client[0]")
+        # Only attack if in attack phase AND at the attack interval
+        should_attack = in_attack_phase and (epoch % args.attack_interval == 0)
+
+        if should_attack:
+            print(f"[ATTACK PHASE] Injecting backdoor triggers into client[0] (interval: every {args.attack_interval} epochs)")
             client[0].train_iter = backdoor_train_loader
             client[0].attack_iter = backdoor_attack_loader
             # Compute gradient mask using global model on benign data
@@ -263,7 +266,13 @@ if __name__ == '__main__':
                 client[0].set_grad_mask(mask_grad_list)
                 print(f"Gradient mask computed, retaining {args.gradmask_ratio * 100}% of smallest gradient parameters")
         else:
-            if epoch >= args.epoch_stop_backdoor:
+            # In attack phase but not at attack interval: use benign data
+            if in_attack_phase:
+                print(f"[ATTACK PHASE] Interval epoch - using benign data (attack every {args.attack_interval} epochs)")
+                client[0].train_iter = benign_train_loader
+                client[0].attack_iter = None
+            # Persistence phase: use benign data only
+            elif epoch >= args.epoch_stop_backdoor:
                 print(f"[PERSISTENCE PHASE] Stopping backdoor injection, using benign data only")
                 client[0].train_iter = benign_train_loader
                 client[0].attack_iter = None
