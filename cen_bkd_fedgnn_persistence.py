@@ -28,6 +28,7 @@ from GNN_common.nets.TUs_graph_classification.load_net import gnn_model  # impor
 from torch.utils.data import DataLoader
 from defense import foolsgold
 import copy
+from hessian_analysis import compute_hessian_metrics
 
 
 def server_robust_agg(w):
@@ -337,6 +338,41 @@ if __name__ == '__main__':
 
         # update global model's weights
         global_model.load_state_dict(result)
+
+        # Hessian analysis (if enabled)
+        if args.compute_hessian and (epoch % args.hessian_freq == 0):
+            hessian_metrics = compute_hessian_metrics(
+                model=global_model,
+                data_loader=benign_train_loader,
+                loss_func=loss_func,
+                device=device,
+                args=args
+            )
+
+            # Save Hessian results if file path is provided
+            if args.hessian_save_file and hessian_metrics:
+                save_path = os.path.join(
+                    args.hessian_save_file, str(args.seed),
+                    MODEL_NAME + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f' %
+                    (args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density)
+                    + '_hessian.txt'
+                )
+                path = os.path.split(save_path)[0]
+                os.makedirs(path, exist_ok=True)
+
+                # Format: epoch, trace, eigenvalue, test_acc, att_acc
+                line_parts = [str(epoch)]
+                if 'trace' in hessian_metrics:
+                    line_parts.append("%.4f" % hessian_metrics['trace'])
+                else:
+                    line_parts.append("NAN")
+                if 'eigenvalue' in hessian_metrics:
+                    line_parts.append("%.4f" % hessian_metrics['eigenvalue'])
+                else:
+                    line_parts.append("NAN")
+
+                with open(save_path, 'a') as f:
+                    f.write(' '.join(line_parts) + '\n')
 
         # evaluate the global model: test_acc
         test_acc = gnn_evaluate_accuracy_v2(client[0].test_iter, global_model)

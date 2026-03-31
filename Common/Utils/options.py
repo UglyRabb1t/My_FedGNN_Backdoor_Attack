@@ -37,7 +37,26 @@ def args_parser():
                         help="break ties when votes sum to 0")
     parser.add_argument('--server_lr', type=float, default=1,
                         help='servers learning rate for signSGD')
-    parser.add_argument('--device',  default=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"), 
+    parser.add_argument('--device',  default=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
                         help="To use cuda, set to a specific GPU ID.")
+
+    # Hessian analysis arguments
+    parser.add_argument('--compute_hessian', action='store_true',
+                        help="Enable Hessian analysis (trace and/or eigenvalue)")
+    parser.add_argument('--compute_hessian_trace', action='store_true',
+                        help="Enable Hessian trace computation")
+    parser.add_argument('--compute_hessian_eigenvalue', action='store_true',
+                        help="Enable largest Hessian eigenvalue computation")
+    parser.add_argument('--hessian_freq', type=int, default=10,
+                        help="Frequency (in epochs) to compute Hessian metrics")
+    parser.add_argument('--hessian_trace_samples', type=int, default=50,
+                        help="Number of random projection samples for Hutchinson's trace estimator")
+    parser.add_argument('--hessian_eigenvalue_iter', type=int, default=100,
+                        help="Number of iterations for power method eigenvalue estimation")
+    parser.add_argument('--hessian_batch_size', type=int, default=10,
+                        help="Maximum number of graphs to use per Hessian computation")
+    parser.add_argument('--hessian_save_file', type=str, default="",
+                        help="Path to save Hessian analysis results")
+
     args = parser.parse_args()
     return args
