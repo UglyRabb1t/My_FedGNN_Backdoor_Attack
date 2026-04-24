@@ -37,7 +37,7 @@ def compute_grad_mask(model, benign_data_loader, loss_func, device, ratio=0.95, 
 
         batch_scores = model.forward(batch_graphs, batch_x, batch_e)
         loss = model.loss(batch_scores, batch_labels)
-        loss.backward()
+        loss.backward(retain_graph=True)
 
     # Step 2: Generate masks based on gradient magnitudes
     mask_grad_list = []

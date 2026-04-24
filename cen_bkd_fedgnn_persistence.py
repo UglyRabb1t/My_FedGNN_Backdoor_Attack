@@ -252,19 +252,6 @@ if __name__ == '__main__':
             print(f"[ATTACK PHASE] Injecting backdoor triggers into client[0] (interval: every {args.attack_interval} epochs)")
             client[0].train_iter = backdoor_train_loader
             client[0].attack_iter = backdoor_attack_loader
-            # Compute gradient mask using global model on benign data
-            if args.gradmask_ratio < 1.0:
-                print("Computing gradient mask with global model on benign data...")
-                mask_grad_list = compute_grad_mask(
-                    model=global_model,
-                    benign_data_loader=benign_train_loader,
-                    loss_func=loss_func,
-                    device=device,
-                    ratio=args.gradmask_ratio,
-                    aggregate_all_layer=False
-                )
-                client[0].set_grad_mask(mask_grad_list)
-                print(f"Gradient mask computed, retaining {args.gradmask_ratio * 100}% of smallest gradient parameters")
         else:
             # In attack phase but not at attack interval: use benign data
             if in_attack_phase:
@@ -281,6 +268,19 @@ if __name__ == '__main__':
 
         for i in range(args.num_workers):
             att_list = []
+            # Compute gradient mask for malicious client before training
+            if i == 0 and should_attack and args.gradmask_ratio < 1.0:
+                print("Computing gradient mask with client[0]'s local model on benign data...")
+                mask_grad_list = compute_grad_mask(
+                    model=client[0].model,
+                    benign_data_loader=benign_train_loader,
+                    loss_func=loss_func,
+                    device=device,
+                    ratio=args.gradmask_ratio,
+                    aggregate_all_layer=False
+                )
+                client[0].set_grad_mask(mask_grad_list)
+                print(f"Gradient mask computed, retaining {args.gradmask_ratio * 100}% of smallest gradient parameters")
             train_loss, train_acc, test_loss, test_acc = client[i].gnn_train_v2()
             client[i].scheduler.step()
 

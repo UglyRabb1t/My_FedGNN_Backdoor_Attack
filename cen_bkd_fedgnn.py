@@ -210,11 +210,14 @@ if __name__ == '__main__':
             # inject global trigger into the centrilized attacker - client[0]
             client[0].train_iter = backdoor_train_loader
             client[0].attack_iter = backdoor_attack_loader
-            # Compute gradient mask using global model on benign data
-            if args.gradmask_ratio < 1.0:
-                print("Computing gradient mask with global model on benign data...")
+        train_l_sum, train_acc_sum, n, batch_count, start = 0.0, 0.0, 0, 0, time.time()
+        for i in range(args.num_workers):
+            att_list = []
+            # Compute gradient mask for malicious client before training
+            if i == 0 and epoch >= args.epoch_backdoor and args.gradmask_ratio < 1.0:
+                print("Computing gradient mask with client[0]'s local model on benign data...")
                 mask_grad_list = compute_grad_mask(
-                    model=global_model,
+                    model=client[0].model,
                     benign_data_loader=benign_train_loader,
                     loss_func=loss_func,
                     device=device,
@@ -223,9 +226,6 @@ if __name__ == '__main__':
                 )
                 client[0].set_grad_mask(mask_grad_list)
                 print(f"Gradient mask computed, retaining {args.gradmask_ratio * 100}% of smallest gradient parameters")
-        train_l_sum, train_acc_sum, n, batch_count, start = 0.0, 0.0, 0, 0, time.time()
-        for i in range(args.num_workers):
-            att_list = []
             train_loss, train_acc, test_loss, test_acc = client[i].gnn_train_v2()
             client[i].scheduler.step()
             global_att = gnn_evaluate_accuracy_v2(backdoor_attack_loader, client[i].model)
