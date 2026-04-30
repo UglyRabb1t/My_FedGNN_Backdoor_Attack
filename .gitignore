@@ -3,3 +3,6 @@ Data/*
 Results/*
 analyzer_results/*
 
+/Results/
+/analyzer/
+/analyzer_results/
