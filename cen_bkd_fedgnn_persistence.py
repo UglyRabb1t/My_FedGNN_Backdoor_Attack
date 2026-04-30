@@ -39,6 +39,60 @@ def server_robust_agg(w):
     return w_avg
 
 
+def get_run_dir(base_path, seed):
+    """
+    获取或创建新的运行编号文件夹
+    如果 {base_path}/{seed}/0/ 不存在，则创建并返回 {base_path}/{seed}/0/
+    如果存在，则检查是否已有实验数据，如果有则创建 {base_path}/{seed}/1/，依此类推
+
+    返回: run_dir (运行文件夹路径，如 {base_path}/{seed}/0)
+    """
+    seed_dir = os.path.join(base_path, str(seed))
+
+    # 如果seed目录不存在，直接创建并返回0
+    if not os.path.exists(seed_dir):
+        os.makedirs(os.path.join(seed_dir, '0'), exist_ok=True)
+        return os.path.join(seed_dir, '0')
+
+    # 找到所有已存在的运行编号
+    existing_runs = []
+    for item in os.listdir(seed_dir):
+        if item.isdigit():
+            existing_runs.append(int(item))
+
+    if not existing_runs:
+        # 没有数字命名的文件夹，创建0
+        run_dir = os.path.join(seed_dir, '0')
+        os.makedirs(run_dir, exist_ok=True)
+        return run_dir
+
+    # 找到最大编号
+    max_run = max(existing_runs)
+
+    # 检查最大编号的文件夹中是否有实验数据
+    max_run_dir = os.path.join(seed_dir, str(max_run))
+    has_existing_data = False
+
+    # 检查是否有任何结果文件
+    if os.path.exists(max_run_dir):
+        for filename in os.listdir(max_run_dir):
+            if filename.endswith('.txt'):
+                file_path = os.path.join(max_run_dir, filename)
+                if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                    has_existing_data = True
+                    break
+
+    if has_existing_data:
+        # 已有数据，创建新编号
+        new_run = max_run + 1
+        run_dir = os.path.join(seed_dir, str(new_run))
+        os.makedirs(run_dir, exist_ok=True)
+        return run_dir
+    else:
+        # 没有数据，使用当前文件夹
+        return max_run_dir
+
+
 class ClearDenseClient(WorkerBaseV2):
     def __init__(self, client_id, model, loss_func, train_iter, attack_iter, test_iter, config, optimizer, device, grad_stub, args, scheduler, is_malicious=False):
         super(ClearDenseClient, self).__init__(model=model, loss_func=loss_func, train_iter=train_iter, attack_iter=attack_iter,
@@ -169,12 +223,22 @@ if __name__ == '__main__':
     # Load data
     partition, avg_nodes = split_dataset(args, dataset)
     drop_last = True if MODEL_NAME == 'DiffPool' else False
+    # filename = "./Data/global_trigger/%d/%s_%s_%d_%d_%d_%.2f_%.2f_%.2f"\
+    #           %(args.seed, MODEL_NAME, config['dataset'], args.num_workers, args.num_mali, args.epoch_backdoor,
+    #              args.frac_of_avg, args.poisoning_intensity, args.density) + '.pkl'
     filename = "./Data/global_trigger/%d/%s_%s_%d_%d_%d_%.2f_%.2f_%.2f"\
-              %(args.seed, MODEL_NAME, config['dataset'], args.num_workers, args.num_mali, args.epoch_backdoor,
+              %(args.seed, MODEL_NAME, config['dataset'], args.num_workers, args.num_mali, 0,
                  args.frac_of_avg, args.poisoning_intensity, args.density) + '.pkl'
     global_trigger = load_pkl(filename)
     print("Triggers loaded!")
     args.num_mali = len(global_trigger)
+
+    # 获取运行目录（自动递增编号）
+    if not args.filename == "":
+        run_dir = get_run_dir(args.filename, args.seed)
+        print(f"Results will be saved to: {run_dir}")
+    else:
+        run_dir = None
 
     # Create loaders for attacker client (client[0])
     train_trigger_graphs, final_idx = inject_global_trigger_train(partition[0], avg_nodes, args, global_trigger)
@@ -277,7 +341,7 @@ if __name__ == '__main__':
                     loss_func=loss_func,
                     device=device,
                     ratio=args.gradmask_ratio,
-                    aggregate_all_layer=False
+                    aggregate_all_layer=True
                 )
                 client[0].set_grad_mask(mask_grad_list)
                 print(f"Gradient mask computed, retaining {args.gradmask_ratio * 100}% of smallest gradient parameters")
@@ -296,7 +360,7 @@ if __name__ == '__main__':
                 att_list.append(tmp_acc)
 
             if not args.filename == "":
-                save_path = os.path.join(args.filename, str(args.seed), config['model'] + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'\
+                save_path = os.path.join(run_dir, config['model'] + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'\
                           %(args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density) + '_%d.txt'%i)
                 path = os.path.split(save_path)[0]
                 isExist = os.path.exists(path)
@@ -343,7 +407,7 @@ if __name__ == '__main__':
         print("Global Test acc: %.3f"%test_acc)
 
         if not args.filename == "":
-            save_path = os.path.join(args.filename, str(args.seed), MODEL_NAME + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'\
+            save_path = os.path.join(run_dir, MODEL_NAME + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'\
                        %(args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density) + '_global_test.txt')
             path = os.path.split(save_path)[0]
             isExist = os.path.exists(path)
@@ -365,7 +429,7 @@ if __name__ == '__main__':
             local_att_acc.append(tmp_acc)
 
         if not args.filename == "":
-            save_path = os.path.join(args.filename, str(args.seed), MODEL_NAME + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'%(args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density) + '_global_attack.txt')
+            save_path = os.path.join(run_dir, MODEL_NAME + '_' + args.dataset + '_%d_%d_%.2f_%.2f_%.2f'%(args.num_workers, args.num_mali, args.frac_of_avg, args.poisoning_intensity, args.density) + '_global_attack.txt')
             path = os.path.split(save_path)[0]
             isExist = os.path.exists(path)
             if not isExist:
