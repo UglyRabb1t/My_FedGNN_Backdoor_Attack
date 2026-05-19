@@ -5,23 +5,33 @@ This script implements the backdoor persistence experiment with layer-specific g
 
 Key improvements:
 1. Support for layer-specific gradient masking ratios
-2. Preset configurations for r=99, r=95, etc.
+2. Numbered preset configurations (1, 2, 3, ...) for easy reference
 3. Better gradient budget allocation across layers
+
+Layer Presets (numbered):
+    Preset ID | Description
+    ---------- | -------------------------------------------------
+         1     | r99 with precise layer ratios (parameter-level)
+         2     | r99 with simplified layer ratios (wildcard patterns)
+         3     | r95 with aggressive layer ratios
 
 Usage examples:
   # Use default aggregate_all_layer=True with r=99
   python cen_v3.py --config ... --gradmask_ratio 0.99
 
-  # Use layer-specific ratios for r=99
-  python cen_v3.py --config ... --gradmask_ratio 0.99 --layer_mask_mode r99 --aggregate_all_layer False
+  # Use layer-specific preset 1 (r99 precise)
+  python cen_v3.py --config ... --gradmask_ratio 0.99 --layer_preset_id 1 --aggregate_all_layer False
 
-  # Use layer-specific ratios for r=95
-  python cen_v3.py --config ... --gradmask_ratio 0.95 --layer_mask_mode r95 --aggregate_all_layer False
+  # Use layer-specific preset 2 (r99 simplified)
+  python cen_v3.py --config ... --gradmask_ratio 0.99 --layer_preset_id 2 --aggregate_all_layer False
+
+  # Use layer-specific preset 3 (r95 aggressive)
+  python cen_v3.py --config ... --gradmask_ratio 0.95 --layer_preset_id 3 --aggregate_all_layer False
 """
 import argparse
 
 from Common.Node.workerbasev2 import WorkerBaseV2
-from gradmask_v2 import compute_grad_mask, apply_grad_mask, get_r99_layer_ratios, get_r99_layer_ratios_simple, get_r95_layer_ratios
+from gradmask_v2 import compute_grad_mask, apply_grad_mask, get_layer_ratios, get_preset_description
 import torch
 from torch import nn
 from torch import device
@@ -207,12 +217,12 @@ if __name__ == '__main__':
     # Parse custom arguments before args_parser()
     import sys
 
-    layer_mask_mode = None
+    layer_preset_id = None
     aggregate_all_layer_arg = None
 
-    if '--layer_mask_mode' in sys.argv:
-        idx = sys.argv.index('--layer_mask_mode')
-        layer_mask_mode = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else None
+    if '--layer_preset_id' in sys.argv:
+        idx = sys.argv.index('--layer_preset_id')
+        layer_preset_id = int(sys.argv[idx + 1]) if idx + 1 < len(sys.argv) else None
         sys.argv.pop(idx + 1)
         sys.argv.pop(idx)
 
@@ -225,7 +235,7 @@ if __name__ == '__main__':
     args = args_parser()
 
     # Set custom arguments
-    args.layer_mask_mode = layer_mask_mode
+    args.layer_preset_id = layer_preset_id
     if aggregate_all_layer_arg is not None:
         args.aggregate_all_layer = aggregate_all_layer_arg
 
@@ -265,17 +275,14 @@ if __name__ == '__main__':
     print("Triggers loaded!")
     args.num_mali = len(global_trigger)
 
-    # Get layer ratios based on mode
+    # Get layer ratios based on preset ID
+    preset_id = None
     layer_ratios = None
-    if args.layer_mask_mode == 'r99':
-        layer_ratios = get_r99_layer_ratios()
-        print(f"[INFO] Using r99 layer-specific ratios")
-    elif args.layer_mask_mode == 'r99_simple':
-        layer_ratios = get_r99_layer_ratios_simple()
-        print(f"[INFO] Using r99_simple layer-specific ratios (wildcard patterns)")
-    elif args.layer_mask_mode == 'r95':
-        layer_ratios = get_r95_layer_ratios()
-        print(f"[INFO] Using r95 layer-specific ratios")
+    if args.layer_preset_id is not None:
+        preset_id = args.layer_preset_id
+        layer_ratios = get_layer_ratios(preset_id)
+        if layer_ratios is not None:
+            print(f"[INFO] Using layer preset ID {preset_id}: {get_preset_description(preset_id)}")
     else:
         print(f"[INFO] Using uniform ratio (no layer-specific masking)")
 
@@ -350,7 +357,7 @@ if __name__ == '__main__':
     print(f"Attack Phase:      Epoch {args.epoch_backdoor} - {args.epoch_stop_backdoor-1}")
     print(f"Persistence Phase:  Epoch {args.epoch_stop_backdoor} - {args.epochs-1}")
     print(f"GradMask Ratio:    {args.gradmask_ratio}")
-    print(f"Layer Mask Mode:   {args.layer_mask_mode if args.layer_mask_mode else 'None (uniform)'}")
+    print(f"Mask Mode ID:   {args.layer_preset_id if args.layer_preset_id else 'None (uniform)'}")
     print(f"Aggregate All:      {aggregate_all_layer}")
     print(f"{'='*80}\n")
 
@@ -395,7 +402,7 @@ if __name__ == '__main__':
                     device=device,
                     ratio=args.gradmask_ratio,
                     aggregate_all_layer=aggregate_all_layer,
-                    layer_ratios=layer_ratios,
+                    preset_id=preset_id,
                     model_name=MODEL_NAME,
                     dataset=config['dataset']
                 )
